@@ -1,0 +1,162 @@
+#!/bin/bash
+# cpucheck - Gary Case (gcase@redhat.com)
+# A rough script to parse the /proc/cpuinfo and /sys/devices/system/cpu 
+# data to display core/socket/HT relationships and current processor speed(s).
+# Now supports RHEL5.3 and newer Xen kernels to the extent they will 
+# display HT, CPU topology and clock speeds (cpu0 only for Xen kernels).
+
+#detect xen kernel
+if [[ `uname -a | grep xen` ]]
+then
+	xen=1
+else
+	xen=0
+fi
+
+#count logical processors
+logical_proc_count=`ls /sys/devices/system/cpu/ | grep ^cpu[0-9] | wc -l`
+
+#Exit if no scaling capabilities exist or a pre-5.3 Xen kernel is running
+x=0
+while [[ "$x" -lt "$logical_proc_count" ]]
+do
+	if [ ! -e "/sys/devices/system/cpu/cpu$x/cpufreq" ] || [ ! -e "/sys/devices/system/cpu/cpu$x/topology/core_id" ]
+	then
+		echo ""
+	        echo "This system or kernel does not support CPU frequency scaling."
+		echo "Please check the BIOS and see if it has been disabled."
+	        echo "If running kernel-xen, please use RHEL 5.3 or later."
+		echo ""
+		exit 1
+	fi
+	(( x+=1 ))
+done
+
+#count cores per CPU
+core_count=`cat /proc/cpuinfo | grep -i -m 1 "cpu cores" | sed 's/^cpu[a-z :\t]*//'`
+
+#determine siblings per proc
+siblings=`cat /proc/cpuinfo | grep -i -m 1 siblings | sed 's/^sib[a-z :\t]*//'`
+
+#determine max frequency
+max_freq=`cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq`
+
+#determine minimum frequency
+min_freq=`cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq`
+
+#determine if HT is enabled
+if [ $siblings = $core_count ]
+then
+        ht=0
+else
+        ht=1
+fi
+
+#get unique socket ID numbers
+declare -a socket_ids
+socket_ids=( `cat /sys/devices/system/cpu/cpu*/topology/physical_package_id | sort | uniq` )
+
+#count sockets
+socket_count=${#socket_ids[*]}
+
+#Display data we've gathered so far
+echo ""
+echo "Hostname:		" $HOSTNAME
+echo "Logical processors:	" $logical_proc_count 
+if [ $xen = 0 ] #Everything works on bare metal kernel
+then
+	echo "Cores per processor:	" $core_count
+	echo "Number of sockets:	" $socket_count
+	echo "Max frequency:		" $max_freq "MHz"
+	echo "Min frequency:		" $min_freq "MHz"
+	if [ $ht = 1 ]
+	then
+		echo "Hyperthreading:		 Enabled"
+	else	
+		echo "Hyperthreading:		 Not supported or disabled"
+	fi
+else #Xen kernel does not properly display CPU topology, socket count and HT status
+	echo "Cores per processor:	 Xen kernel masks CPU topology"
+	echo "Number of sockets:	 Xen kernel masks socket count"
+	echo "Max frequency:		" $max_freq "MHz"
+	echo "Min frequency:		" $min_freq "MHz"
+	echo "CPU0 frequency:		 `cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq` MHz*"
+	echo "Hyperthreading: 	 Xen kernel masks HT detection"
+fi
+echo ""
+
+#determine real core / HT sibling pairings
+if [ $ht = 1 ]
+then 
+	declare -a ht_pairings
+	x=0
+	y=0
+	while [[ "$x" -lt "$logical_proc_count" ]]
+	do
+		y=0
+		while [ "$y" -lt "$logical_proc_count" ]
+		do
+      			if [ "$x" -ne "$y" ]
+			then
+				if cmp -s /sys/devices/system/cpu/cpu$x/topology/core_id /sys/devices/system/cpu/cpu$y/topology/core_id &&  cmp -s /sys/devices/system/cpu/cpu$x/topology/physical_package_id /sys/devices/system/cpu/cpu$y/topology/physical_package_id
+			        then
+					ht_pairings[$x]=$y
+					break #We've found our match, don't keep testing values of y
+				fi
+			fi
+			(( y += 1 ))
+		done
+		(( x += 1 ))
+	done
+fi
+#display CPU relationships and speeds. This cannot be calculated 
+#with a Xen kernel running, so skip this display and show the disclaimer if xen detected.
+if [ $xen = 0 ]
+then
+	x=0
+	if [ $ht = 1 ]  
+	then
+		echo " Logical Socket/     Speed         HT"
+		echo "   CPU    Core                   Sibling"
+		echo "-----------------------------------------" 
+		while [[ "$x" -lt "$logical_proc_count" ]]
+		do
+			if [ $x -gt 0 ] 
+			then #Don't duplicate CPU (i.e. prevent 0/1, 1/0, 2/3, 3/2)
+				y=$((x-1))
+				dup=0
+				while [[ $y -ge 0 ]]
+				do
+					if [[ ${ht_pairings[$y]} -eq $x ]]
+					then
+						dup=1
+					fi
+					(( y -= 1 ))
+				done
+				if [ $dup -eq 0 ]
+				then
+					echo "| CPU$x	|  `cat /sys/devices/system/cpu/cpu$x/topology/physical_package_id`/`cat /sys/devices/system/cpu/cpu$x/topology/core_id`	|  `cat /sys/devices/system/cpu/cpu$x/cpufreq/cpuinfo_cur_freq` MHz	| CPU${ht_pairings[$x]}	|"
+				fi
+			else #This is the first run, no dupe check necessary
+				echo "| CPU$x	|  `cat /sys/devices/system/cpu/cpu$x/topology/physical_package_id`/`cat /sys/devices/system/cpu/cpu$x/topology/core_id`	|  `cat /sys/devices/system/cpu/cpu$x/cpufreq/cpuinfo_cur_freq` MHz	| CPU${ht_pairings[$x]}	|"
+			fi
+		(( x+=1 ))
+		done
+		echo "-----------------------------------------" 
+	else
+		echo " Logical Socket/     Speed"
+		echo "   CPU    Core"
+		echo "---------------------------------" 
+		while [[ "$x" -lt "$logical_proc_count" ]]
+		do
+			echo "| CPU$x 	|  `cat /sys/devices/system/cpu/cpu$x/topology/physical_package_id`/`cat /sys/devices/system/cpu/cpu$x/topology/core_id`	|  `cat /sys/devices/system/cpu/cpu$x/cpufreq/cpuinfo_cur_freq` MHz	|"
+		(( x+=1 )) 
+		done
+		echo "---------------------------------" 
+	fi
+else #xen=1 so display the xen kernel disclaimer instead of the cpu chart
+	echo "* In RHEL5.3 and newer, the Xen kernel only provides clock speeds from CPU0"
+	echo "  and does not report socket/core/HT sibling relationships. Please load"
+	echo "  a non-Xen kernel and run this script again to view that information."
+	echo ""
+fi

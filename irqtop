@@ -1,0 +1,31 @@
+#! /bin/bash
+
+#
+# watch /proc/interrupts; 
+#
+# was a one-line alias, but aliases are harder to distribute. 
+# developed while tracking down small packet perf issues.
+#
+
+# MAINTAINER: ahecox@redhat.com
+
+source $(dirname $0)/../lib/functions
+
+usage() { pusage "-i <INTERVAL> -c <CPU>"; }
+
+INT="-n 2"
+CPU=
+while getopts ":i:c:h" opts; do
+    case $opts in
+        i ) INT="-n $OPTARG";;
+        c ) CPU="taskset -c $OPTARG";;
+        h|\? ) usage;;
+    esac
+done
+shift $(( $OPTIND - 1 ))
+
+[ $# -ne 0 ] && usage
+
+[ ! -z "$CPU" ] && require_root
+
+$CPU watch -d $INT "tr -s ' ' < /proc/interrupts"

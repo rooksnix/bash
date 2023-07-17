@@ -1,0 +1,30 @@
+#!/bin/bash
+#
+# Start tcpdump in "ring buffer" mode and automatically kill it
+# whenever a specific string appears in the logs. This is useful to obtain
+# a network capture related to an infrequent event.
+# 
+# This specific example will create up to four files named /tmp/my-capture.cap*
+# of up to 400 MB each containing every network communication on every
+# interface and will terminate whenever the string "KILLITWITHFIRE" is appended
+# to /var/log/messages
+#
+# The commands will keep running after the user disconnects from the shell
+# from which the script was started. You can terminate all the commands by
+# killing the tcpdump program only (tail and awk should terminate
+# automatically).
+#
+# This was written for SFDC#00331299
+# 
+# MAINTAINER: Adrien Kunysz <adk@redhat.com>
+# 
+# TODO: check whether it actually work when log file is rotated
+# TODO: parametrize the command to run/kill (tcpdump in this case)
+# TODO: parametrize the log message to look for
+# TODO: parametrize the log file to watch
+# TODO: make it work with "last message repeated X times" logs
+
+tcpdump -s0 -w /tmp/my-capture.cap -W 4 -C 400 -i any &
+TOKILL=$!
+tail --pid=$TOKILL -n0 --follow=name /var/log/messages.log | awk "/KILLITWITHFIRE/{system(\"kill $TOKILL\")}" &
+disown -a -h

@@ -1,0 +1,37 @@
+#! /bin/bash
+
+# report information on ethernet interfaces
+# 
+# because running ifconfig and ethtool and ethtool -i gets old
+#
+
+source /system/lib/functions
+
+require_root
+
+net=/sys/class/net
+
+for e in $(ls $net | grep eth); do 
+	echo "--- $e ---";
+	mac=$(cat $net/$e/address)
+	state=$(cat $net/$e/operstate)
+	irq=$(cat $net/$e/device/irq)
+	drv=$(basename $(readlink $net/$e/device/driver/module))
+	ver=$(cat $net/$e/device/driver/module/version)
+	slot=$(basename $(readlink $net/$e/device))
+	name=$(lspci -s $slot | cut -d: -f3-99)
+	if [ $state = "up" ]; then
+		ip=$(ifconfig $e | grep Bcast| cut -d: -f2| cut -d' ' -f1)
+		mtu=$(cat $net/$e/mtu)
+		speed=$(ethtool $e | grep Speed | cut -d: -f2| tr -d ' ')
+	else
+		unset speed
+		ip="[link down]"
+	fi
+
+	echo $name
+	echo $drv-$ver
+	echo $ip $speed 
+	echo $mac irq-$irq $slot
+	echo
+done

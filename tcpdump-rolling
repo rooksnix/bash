@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# Runs the tcpdump with a capture size of 200M and keeps 5 copies of it until
+#   killed.  Logs information to $TEMP_FOLDER/tcpdump.log
+
+# Written by Patrick Connelly <pcon@redhat.com>
+
+# MAINTAINER: pcon@redhat.com
+
+TEMP_FOLDER="/tmp/tcpdump"
+
+########################################
+###                                 ####
+###   DO NOT EDIT BELOW THIS LINE   ####
+###                                 ####
+########################################
+
+CAP_NAME="tcpcap"
+
+if [ ! -d $TEMP_FOLDER ]
+then
+	mkdir -p $TEMP_FOLDER
+fi
+
+chmod a+w $TEMP_FOLDER
+
+(
+	echo "---------- STARTED ON $(date) ----------"
+
+	while [ 1 == 1 ]
+	do
+		tcpdump -s 0 -C 200 -w $TEMP_FOLDER/$CAP_NAME.0
+		mv $TEMP_FOLDER/$CAP_NAME.4 $TMP_FOLDER/$CAP_NAME.5
+		mv $TEMP_FOLDER/$CAP_NAME.3 $TMP_FOLDER/$CAP_NAME.4
+		mv $TEMP_FOLDER/$CAP_NAME.2 $TMP_FOLDER/$CAP_NAME.3
+		mv $TEMP_FOLDER/$CAP_NAME.1 $TMP_FOLDER/$CAP_NAME.2
+		mv $TEMP_FOLDER/$CAP_NAME.0 $TMP_FOLDER/$CAP_NAME.1
+
+	done
+
+) >> $TEMP_FOLDER/tcpdump.log 2>&1

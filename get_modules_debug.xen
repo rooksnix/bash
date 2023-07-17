@@ -1,0 +1,152 @@
+#!/bin/bash 
+# The xen version of get_modules_debug
+# MAINTAINER: hjayasur, dwysocha
+# 2011/03/14 - originally by sprabhu
+
+BREW_KERNEL="/mnt/brew/packages/kernel"
+MODULE_LOCATION="/cores/debuginfo"
+
+if ! [ -x crash ]
+then
+	echo "Make sure you are running this in a cas directory containing a valid crash script"
+	exit
+fi
+
+#Unzip the files which were gziped by the CAS system
+for i in $(cat crash|grep '^crash'); do if [ -a $i.gz ]; then gunzip $i.gz; fi; done
+
+#Get crash excutable from crash script. Enable silent mode
+crash=`cat crash|sed 's/#.*//'|grep -v '^$' |grep crash|sed 's/crash/crash -s/'`
+echo CRASH_COMMAND: $crash
+
+#if ! [ -f vmcore ]
+#then
+#	echo "Make sure vmcore is present in the cwd"
+#	exit
+#fi
+
+echo sys|$crash >sys.$$
+
+ARCHITECTURE=`cat sys.$$|grep 'MACHINE:'|awk '{print $2}'|head -n1`
+RELEASE=`cat sys.$$|grep 'RELEASE:'|awk '{print $2}'|head -n1`
+RHEL_VERSION=`echo $RELEASE|sed 's/.*\.EL.*/4/'|sed 's/.*\.el5.*/5/'|sed 's/.*\.el6.*/6/'`
+KERNEL_VERSION=`echo $RELEASE|sed 's/\.EL.*/.EL/'|sed 's/\.el5.*/.el5/'|sed 's/\.el6.*/.el6/'`
+KERNEL_MAJOR=`echo $KERNEL_VERSION|sed 's/-.*//'`
+KERNEL_MINOR=`echo $KERNEL_VERSION|sed 's/.*-//'`
+
+# hack for -xen, -PAE and others
+# RHEL4: e.g. 2.6.9-101.ELsmp
+#  kernel-debuginfo-2.6.9-102.EL.x86_64.rpm
+# RHEL5: e.g. 2.6.18-308.el5
+#  kernel-debuginfo-2.6.18-274.el5.x86_64.rpm
+#  kernel-debug-debuginfo-2.6.18-274.el5.x86_64.rpm
+#  kernel-xen-debuginfo-2.6.18-274.el5.x86_64.rpm
+#  kernel-PAE-debuginfo-2.6.18-274.el5.i686.rpm
+# RHEL6: e.g. 2.6.32-220.el6.x86_64
+#  kernel-debuginfo-2.6.32-131.0.15.el6.x86_64.rpm
+#  kernel-debug-debuginfo-2.6.32-131.0.15.el6.x86_64.rpm
+KERNEL_VARIANT=`echo $RELEASE|sed 's/.*\.el5//'|sed 's/.*\.el6//'`
+if [ "$RHEL_VERSION" -eq 6 ]
+then
+	KERNEL_VARIANT=`echo $KERNEL_VARIANT|sed "s/\.$ARCHITECTURE//"`
+fi
+
+if [ -n "$KERNEL_VARIANT" ]
+then
+	KERNEL_VARIANT="-$KERNEL_VARIANT"
+fi
+
+DEBUGINFO_PACKAGE=$BREW_KERNEL/$KERNEL_MAJOR/$KERNEL_MINOR/$ARCHITECTURE/kernel$KERNEL_VARIANT-debuginfo-$KERNEL_VERSION.$ARCHITECTURE.rpm
+
+echo ARCHITECTURE: $ARCHITECTURE
+echo RHEL_VERSION : $RHEL_VERSION
+echo RELEASE : $RELEASE
+echo KERNEL_VERSION : $KERNEL_VERSION
+#echo $KERNEL_MAJOR
+#echo $KERNEL_MINOR
+echo KERNEL_VARIANT : $KERNEL_VARIANT
+echo DEBUGINFO_PACKAGE : $DEBUGINFO_PACKAGE
+
+KERNEL_DEBUG_LIB_MODULES="$RELEASE"
+echo KERNEL_DEBUG_LIB_MODULES : $KERNEL_DEBUG_LIB_MODULES
+
+MODULE_LOCATION_ARCH=$MODULE_LOCATION/$ARCHITECTURE
+echo MODULE_LOCATION_ARCH : $MODULE_LOCATION_ARCH
+
+VMLINUX_LOCATION="/usr/lib/debug/lib/modules/$KERNEL_DEBUG_LIB_MODULES"
+echo VMLINUX_LOCATION : $VMLINUX_LOCATION
+
+rm -f commands
+echo mod|$crash >mods.$$
+
+
+#if [ $? -ne 0 ]
+#then 
+#	echo Error obtaining modules list
+#	rm -f files.$$ pattern.$$ mods.$$ sys.$$
+#	exit;
+#fi
+
+rpm -qpl $DEBUGINFO_PACKAGE|grep $KERNEL_DEBUG_LIB_MODULES > files.$$
+if [ $? -ne 0 ]
+then 
+	echo Error reading rpm file
+	rm -f files.$$ pattern.$$ mods.$$ sys.$$
+	exit;
+fi
+
+for i in `cat mods.$$|grep -v NAME|grep -v '^$'|awk '{print $2}'`
+do
+	#echo $i
+	#workaround for modules names with '_' not matching debuginfo file names.
+	ti=`echo $i|sed 's/_/[_-]/g'`
+	#echo $ti
+	file=`grep /$ti.ko.debug files.$$`
+	if [ "-$file-" != "--" ]
+	then 
+		if [ -a $MODULE_LOCATION_ARCH/$file.gz ] 
+		then
+			gunzip $MODULE_LOCATION_ARCH/$file.gz 
+		fi
+		if ! [ -a $MODULE_LOCATION_ARCH/$file ]  
+		then
+			echo "."$file >>pattern.$$
+		fi
+		echo mod -s $i $MODULE_LOCATION_ARCH/$file >>commands
+	fi
+done
+
+if [ -a $MODULE_LOCATION_ARCH/$VMLINUX_LOCATION/vmlinux.gz ] 
+then
+	gunzip $MODULE_LOCATION_ARCH/$VMLINUX_LOCATION/vmlinux.gz
+fi
+if ! [ -a $MODULE_LOCATION_ARCH/$VMLINUX_LOCATION/vmlinux ]
+then
+	echo ".$VMLINUX_LOCATION/vmlinux" >>pattern.$$
+fi
+
+#Extract only if pattern.$$ file created.
+if [ -a pattern.$$ ]
+then
+	pwd=`pwd`
+	echo Checking module directory
+	mkdir -p $MODULE_LOCATION_ARCH 
+	cd $MODULE_LOCATION_ARCH
+	echo Extracting Modules
+	# 20111028 - change of plan ... we now want to extract everything
+	# 20111102 - another change of plan ... 
+	#rpm2cpio $DEBUGINFO_PACKAGE|cpio -div
+	rpm2cpio $DEBUGINFO_PACKAGE|cpio -div `cat $pwd/pattern.$$`
+	#make the directories group writable
+	find ".$VMLINUX_LOCATION" -type d -exec chmod u=rwx,g=rwxs,o=rx {} \;
+	#make the files group writable
+	find ".$VMLINUX_LOCATION" -type f -exec chmod u=rw,g=rw,o=r {} \;
+	cd $pwd
+else 
+	echo All modules present. Nothing to extract
+fi
+
+cat crash|sed 's/crash/crash -i commands/' | sed "s#\svmlinux# $MODULE_LOCATION_ARCH/$VMLINUX_LOCATION/vmlinux#" >crash_new
+chmod +x crash_new
+
+rm -f files.$$ pattern.$$ mods.$$ sys.$$

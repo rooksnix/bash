@@ -1,0 +1,46 @@
+#! /bin/bash
+
+#
+# given pid, map hugepage usage on a per node basis
+#
+# may be interesting information to view, but was created specifically
+# for an environment in which hard node affinities could not be
+# defined. These were used after initialization to determine a
+# "suggested" node affinity based on initial hugepage associations
+#
+
+# MAINTAINER: ahecox@redhat.com
+
+source $(dirname $0)/../lib/functions
+
+usage() { pusage "<pid>"; }
+
+while getopts ":v" opts; do
+    case $opts in
+        v  ) DEBUG=yes;;
+        \? ) usage;;
+    esac
+done
+shift $(( $OPTIND - 1 ))
+
+[ $# -ne 1 ] && usage
+
+nr_hugepages=$(cat /proc/sys/vm/nr_hugepages)
+[ $nr_hugepages -eq 0 ] && err "system does not have hugepages"
+
+nr_nodes=$(ls /sys/devices/system/node/ 2>/dev/null | wc -l)
+[ $nr_nodes -lt 2 ] && err "system is not numa"
+
+pid=$1
+nodes=$(seq 0 $(( nr_nodes - 1 ))
+
+grep " huge " /proc/$pid/numa_maps | tr ' ' '\n' | grep -E "^N[0-9]+=[0-9]+" | tr -d N | tr = ' ' | ( while read node pages; do 
+	debug "node is $node, pages is $pages"
+	let buckets[node]+=$pages
+	let total+=$pages
+    done
+    for n in $nodes; do 
+	echo "node $n: ${buckets[n]:-0}"
+    done
+    echo "total: $total"
+)

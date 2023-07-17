@@ -1,0 +1,62 @@
+#!/bin/bash
+# Prep a vmcore for running crash, given debuginfo; extract to local directory
+# MAINTAINER: Dave Wysochanski <dwysocha@redhat.com>
+#
+# Snippits taken from get_modules_debug
+#
+ARGS=2
+E_BADARGS=65
+if [ $# -ne "$ARGS" ]; then
+        echo "Usage: `basename $0` [vmcore] [debuginfo]"
+        exit $E_BADARGS
+fi
+core=$1
+DEBUGINFO_PACKAGE=$2
+# Extract vmlinux
+echo Extracting vmlinux...
+rpm2cpio $DEBUGINFO_PACKAGE | cpio -idv ./usr/lib/debug/lib/modules/*/vmlinux
+# Run crash to get list of modules
+crash="crash -s $1 ./usr/lib/debug/lib/modules/*/vmlinux"
+echo sys|$crash >sys.$$
+RELEASE=`cat sys.$$|grep 'RELEASE:'|awk '{print $2}'|head -n1`
+KERNEL_DEBUG_LIB_MODULES="$RELEASE"
+ARCHITECTURE=`cat sys.$$|grep 'MACHINE:'|awk '{print $2}'|head -n1`
+MODULE_LOCATION="./usr/lib/debug/lib/modules/$RELEASE"
+echo Extracting modules to $MODULE_LOCATION
+
+rpm -qpl $DEBUGINFO_PACKAGE|grep $KERNEL_DEBUG_LIB_MODULES > files.$$
+if [ $? -ne 0 ]
+then 
+	echo Error reading rpm file
+	rm -f files.$$ pattern.$$ mods.$$ sys.$$
+	exit;
+fi
+echo mod|$crash >mods.$$
+
+# Now create the 'commands' file we can use with crash
+# ? This seems unnecessary, but we need 'pattern' file below
+for i in `cat mods.$$|grep -v NAME|grep -v '^$'|awk '{print $2}'`
+do
+	#workaround for modules names with '_' not matching debuginfo file names.
+	ti=`echo $i|sed 's/_/[_-]/g'`
+	file=`grep /$ti.ko.debug files.$$`
+	if [ "-$file-" != "--" ]
+	then 
+		echo "."$file >>pattern.$$
+		echo mod -s $i $MODULE_LOCATION/$file >>commands
+	fi
+done
+
+#Extract only if pattern.$$ file created.
+if [ -a pattern.$$ ]
+then
+	rpm2cpio $DEBUGINFO_PACKAGE|cpio -div `cat ./pattern.$$`
+else 
+	echo All modules present. Nothing to extract
+fi
+rm -f files.$$ pattern.$$ mods.$$ sys.$$
+# Create the script to run crash
+CRASHSCRIPT=`basename $core`
+echo "crash -i commands $core ./usr/lib/debug/lib/modules/$RELEASE/vmlinux" > ./crash_$CRASHSCRIPT
+chmod +x ./crash_$CRASHSCRIPT
+echo "run crash with: ./crash_$CRASHSCRIPT"

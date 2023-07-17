@@ -1,0 +1,16 @@
+#!/bin/bash
+
+# collect sysrq information with a known markers in log file,
+# contributed by David Ash <dash@redhat.com>
+
+# MAINTAINER: unmaintained
+
+for i in {1..4}; do
+  /usr/bin/logger "Executing loop $i-m"
+  echo p > /proc/sysrq-trigger
+  /usr/bin/logger "Executing loop $i-p"
+  echo m > /proc/sysrq-trigger
+  /usr/bin/logger "Executing loop $i-t"
+  echo t > /proc/sysrq-trigger
+  sleep 2
+done

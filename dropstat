@@ -1,0 +1,324 @@
+#! /bin/bash
+
+#
+# generic monitor for dropped packets between userspace and the
+# driver. use ethtool -S to look at the NIC driver if you see any
+# drops recorded under wdrv or rdrv.
+#
+# this doesn't attempt to track every single error condition: just
+# those that seem likely in the studied environment.
+#
+# this script is a constant work in progress but has been used in the
+# field by several customers. You may also be interested in the
+# dropwatch utility, slated for RHEL 5.4, as a long-term replacement. 
+#
+
+#
+# MAINTAINER: ahecox@redhat.com
+#
+
+############ what it means #############################################
+#
+# counter by counter ...
+#
+########
+#
+# wpkt -- total packets written in interval
+# 
+########
+#
+# wip -- dropped in IP write code. common case is net.core.wmem_max is
+# too small, so increase it. I'm not 100%, but at least as large as
+# MTU seems necessary. making it as large as the largest frame you'll
+# attempt to send (eg, w\ jumbo frames, 64k in UDP) might be
+# necessary too.
+#
+# counter may have changed in Fedora/RHEL6, need to confirm.
+#
+# see: net/ipv4/ip_output.c, IPSTATS_MIB_OUTDISCARDS
+#
+########
+#
+# wqdc -- packet lost in qdisc; increase txqueuelen via ifconfig. the
+# struct type differs from rhel 4 to upstream. look for the qstat 
+# structure (base structure is gnet_stats_queue in upstream).
+#
+#   rhel5/net/sched/sch_generic.c :: qdisc_drop(), kfree_skb()
+#
+# tc also drops packets when used as a router, eg RED. see
+# include/net/red.h for the data structures of interest, particularly 
+# red_stats. i don't track any policy based drops either. see
+# gnet_stats_queue for all possible options. only pfifo_fast is
+# considered.
+#
+# tc's "requeues" field may be interesting to track at some point, but
+# currently the cpuc field seems to capture all of these.
+#
+# see: net/sched/sch_generic.c or whichever packet scheduer is in use
+#
+########
+#
+# wdrv -- dropped in the driver/NIC while writing, use ethtool -S
+# instead of dropstat.
+#
+# I've never actually seen this occur. mstat might be a better tool to
+# track it down.
+#
+# see: the driver in question.
+#
+########
+#
+# wthr -- netif_rx_stats.throttled (RHEL 4 only)
+#
+# packets queued in the receive poll; after queued once, they are 
+# dropped, which will show up in the rirq counter. As with rirq, 
+# increase net.core.netdev_max_backlog.
+#
+########
+#
+# wcpu -- this has been observed pediodically with bnx2 with too small
+# of a txqueuelen (or tx ring buffer); in another, the s2io driver was
+# enabled with multiple tx fifo's (although no msi nor multiqueue
+# support.
+#
+# qdisc rx drops??? 
+# irq tx drops??
+#
+# see qdisc_restart() in sch_generic.c and
+#
+#   http://lwn.net/articles/121566/
+#
+# a collision does not necessarily imply a drop. if there's a drop,
+# enable kernel debugging and look for a message like 'dead loop on
+# netdevice'. if not dropped, it seems correspond 1:1 to a packet
+# being requeued. see tc -s qdisc show dev <dev> to confirm.
+#
+# softnet_seq_show
+# netif_rx_stats
+# see: ? for cpu_collision
+#
+########
+#
+# warp -- unres_discards. unresolved drops in the arp code.
+#
+# see net/core/neighbour.c and 9a6d276e85aa3d8f308fc5e8de6892daeb60ae5f
+# 
+########
+#
+# rpkt -- total packets received in that interval
+#
+########
+#
+# rdrv -- dropped by driver/NIC while reading, use ethtool -S instead of
+# dropstat.
+#
+# for driver related drops there several tuning options: increasing
+# the appropriate ring buffer (ethtool -g/-G) is the most common. 
+#
+# - make sure you're using MSI interrupts.
+# - make sure you're using NAPI
+# - increase /sys/class/net/<if>/weight
+# - increase net.core.netdev_budget
+#
+# on the last note -- test! if you're going to lose some packets and
+# you just want to minimize the number, you may want to reduce it so
+# you minimize resource consumption it takes to drop those.
+#
+# see: the driver in question.
+#
+########
+#
+# rsyn -- drops in the tcp receive backlog (too many unanswered
+# syn's). this counter is an almalgamation of
+# LINUX_MIB_LISTENOVERFLOWS and LINUX_MIB_LISTENDROPS. Increase
+# somaxconn, usually, but there may be other more complicated cases,
+# at least in RHEL4.
+#
+# see: net/ipv4/tcp_ipv4.c for the above mentioned strings.
+#
+########
+#
+# rtcp -- drops in the tcp receive process. cases include:
+# 
+#  - checksum error
+#  - corrupt packet header
+#  - if (th->syn && !before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) (??)
+#    (from tcp_rcv_established in tcp_input.c. Appears to be an RFC
+#    violation relating to SYN/RST stuff, but not sure yet.
+#
+# see net/ipv4/tcp_input.c and net/ipv4/tcp_ipv4.c for TCP_MIB_INERRS
+#
+########
+#
+# rudp -- drop in the UDP read code. frequently this means out of read
+# buffers, so increase net.core.rmem_max. the full list of options is:
+#
+#  - checksum errors
+#  - ENOMEM on the socket queue
+#  - malloc failure for header allocation
+#  - xfrm4 policy (huh?)
+#  - partial checksum on a udplite when full checksums were requested
+#  - an incomplete packet (header indicated length < actual length)
+#
+# see: net/ipv4/udp.c
+#
+########
+#
+# rirq -- netif_rx_stats.dropped.
+#
+#    if (queue->input_pkt_queue.qlen <= netdev_max_backlog) {
+#        ..
+#    }
+#    __get_cpu_var(netdev_rx_stat).dropped++;
+#
+# increase net.core.netdev_max_backlog. careful -- you can run out of
+# memory if you count wrong.
+#
+# see: net/core/dev.c
+#
+########
+#
+# rsqz -- packets left for processing during net_rx_action() in
+# net/core/dev.c. Is not a drop, just implies polling values could be
+# made larger.
+# 
+#   if (budget <= 0 || jiffies - start_time > 1) // 
+#
+# increasing netdev_budget, via proc, handles the left expression, for
+# jiffies - start_time, you're sol. nb: jiffies is a global
+# incremented each timer interrupt.
+#
+# - increase net.core.netdev_budget
+# - increase /sys/class/net/<dev>/weight
+#
+# see net/core/dev.c 
+#
+########################################################################
+
+### the heap
+#
+# /sys/class/net/<if>/weight -- max number of packets handled per
+# poll. 
+#
+# netdev_budget -- controls how many packets (polls*weight, roughly)
+# can be processed before returning from this receiving loop. (the
+# other limit is 1 jiffie)
+#
+# if both of these values are maxed out, you'll poll as large as the
+# driver can (based on whatever other limits it has) for a jiffie.
+#
+# 0xffffffff8000c519 : net_rx_action+0x1/0x1a4 [kernel]
+# 0xffffffff80011fbc : __do_softirq+0x89/0x133 [kernel] (inexact)
+# 0xffffffff8005e2fc : call_softirq+0x1c/0x2880 [kernel] (inexact)
+# 0xffffffff8006cada : do_softirq+0x2c/0x85 [kernel] (inexact)
+# 0xffffffff8006c962 : do_IRQ+0xec/0xf5 [kernel] (inexact)
+#
+###
+
+source $(dirname $0)/../lib/functions
+
+usage() { pusage "[-c count] [-i interval] <interface>";} 
+
+sumx() 
+{ 
+	local sumx=0
+	for i in $*; do
+		let sumx+=16#$i
+	done
+	echo $sumx
+}
+
+frc() # read file, row, column; transforms ':' into ' ', squeezes ' '
+{ 
+	tr ':' ' ' < ${1} |tr -s ' ' |head -n $2 |tail -n 1 |cut -d' ' -f${3}
+}
+
+# note: make this file-name-column (fnc v frc)?
+# could fnc work for all cases frc is being used?
+# yes, it would. file-column and file-name-column would handle all cases
+drv() 
+{
+    f=/proc/net/dev
+    c="$(grep $IF $f |tr : ' ' |tr -s ' ' | sed 's/^ *//' |cut -d' ' -f${1}-${2})"
+    sum $c
+}
+
+c_results()
+{
+	softnet=/proc/net/softnet_stat
+	dev=/proc/net/dev
+	snmp=/proc/net/snmp
+	netstat=/proc/net/netstat
+	wpkt=0 wip=1 wqdc=2 wdrv=3 wthr=4 wcpu=5 warp=6 rpkt=7 rdrv=8 rsyn=9 rtcp=10 rudp=11 rirq=12 rsqz=13 
+
+	CURRENT[wpkt]=$(drv 11 11)
+	CURRENT[wip]=$(frc $snmp 2 12)
+	CURRENT[wqdc]=$(tc -s qdisc show dev $IF |grep dropped |cut -d' ' -f8 |tr -d ',')
+	CURRENT[wdrv]=$(drv 12 16)
+	CURRENT[wthr]=$(sum -b 16 $(cut -d' ' -f4 $softnet))
+	CURRENT[wcpu]=$(sum -b 16 $(cut -d' ' -f9 $softnet))
+	CURRENT[warp]=$(sum -b 16 $(grep -v entries /proc/net/stat/arp_cache |awk '{print $12}'))	
+	CURRENT[rpkt]=$(drv 3 3)
+	CURRENT[rdrv]=$(drv 4 7)
+	CURRENT[rsyn]=$(sum $(frc $netstat 2 21) $(frc $netstat 2 22))
+	CURRENT[rtcp]=$(frc $snmp 8 14)
+	CURRENT[rudp]=$(frc $snmp 10 4)
+	CURRENT[rirq]=$(sum -b 16 $(cut -d' ' -f2 $softnet))
+	CURRENT[rsqz]=$(sum -b 16 $(cut -d' ' -f3 $softnet))
+
+}
+
+p_banner()
+{
+	columns=(wpkt wip wqdc wdrv wthr wcpu warp rpkt rdrv rsyn rtcp rudp rirq rsqz)
+	fmt="%${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s %${W}s"
+	printf "$fmt\n" ${columns[@]}
+}
+
+p_results() 
+{ 
+	fmt="%${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d %${W}d"
+	results=( $( diff_array "${CURRENT[*]}" "${LAST[*]}" ) )
+	printf "$fmt\n" ${results[@]}
+}
+
+### main ###
+
+LAST=()
+CURRENT=()
+W=6 # width
+break=10
+interval=2
+
+while getopts ":c:i:" opts; do
+	case $opts in
+		i  ) interval="$OPTARG";;
+		c  ) count="$OPTARG";;
+		\? ) usage;;
+	esac
+done
+shift $(( OPTIND - 1 ))
+
+[ $# -ne 1 ] && usage
+IF="$1"
+
+i=0
+
+while :; do
+	p_banner
+	col=0
+	while [ $col -le $break ]; do 
+		let i+=1
+
+		c_results
+		p_results
+		LAST=( ${CURRENT[@]} )
+		col=$((col + 1))
+		sleep $interval
+		if [ $count ]; then
+			if [ $i -ge $count ]; then
+				exit
+			fi
+		fi
+	done
+done

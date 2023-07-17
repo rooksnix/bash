@@ -1,0 +1,36 @@
+#! /bin/bash
+
+#
+# simple wrapper for setting smp_affinity using a natural cpu notation.
+#
+# written because I use sudo and find quoting echo with sudo tedious.
+#
+
+# MAINTAINER: ahecox@redhat.com
+
+source $(dirname $0)/../lib/functions
+
+usage() { pusage "<irq1,irq2> <cpu1,cpu2>"; }
+
+while getopts ":v" opts; do
+    case $opts in
+	v  ) DEBUG=yes;;
+	\? ) usage;;
+    esac
+done
+shift $(( $OPTIND -1 ))
+
+[ $# -ne 2 ] && usage
+
+require_root
+
+cpumask=0
+for c in $(echo $2 | tr , ' '); do
+    let m="1<<$c"
+    let cpumask+=$m
+done
+
+for i in $(echo $1 | tr , ' '); do
+    debug "setting cpumask of $cpumask for irq $i"
+    printf %x $cpumask > /proc/irq/$i/smp_affinity
+done

@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# MAINTAINER: cevich@redhat.com
+
+# Spit out netstat connections data in a format more digestible for graphing
+# does not show listening sockets, only connected.
+
+echo "TIME,PID/Command,UID,Recv-Q,Send-Q,State,Timer"
+while sleep 1
+do 
+    TS=$(date +%T)
+    netstat -S | awk '/^tcp/{print $9","$7","$2","$3","$6","$10 $11}' | \
+        while read LINE
+        do 
+            echo "${TS},${LINE}"
+        done
+done

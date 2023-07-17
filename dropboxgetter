@@ -1,0 +1,15 @@
+#!/bin/bash
+# MAINTAINER: dornelas@redhat.com
+
+if [ -z $1 ]; then
+    echo "Usage: $0 <filename>"
+    exit 1
+fi
+
+FILE=$1
+#Kerberos username
+USER='mrooks'
+#FTPSERVER='seg.rdu.redhat.com'
+FTPSERVER='flopbox.corp.redhat.com'
+
+lftp -e 'get '$FILE'; quit' $USER@$FTPSERVER:/dropbox
