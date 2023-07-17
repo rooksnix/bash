@@ -1,0 +1,25 @@
+    #!/bin/bash
+    # HTTP Proxy Server's IP Address (or URL)
+    proxy_server=$1
+     
+    # HTTP Proxy Server's Port Number
+    port=$2
+     
+    # We're trying to reach this url via the given HTTP Proxy Server
+    # (http://www.google.com by default)
+    url="http://www.google.com"
+     
+    # Timeout time (in seconds)
+    timeout=20
+     
+    # We're fetching the return code and assigning it to the $result variable
+    result=`HEAD -d -p http://$proxy_server:$port -t $timeout $url`
+     
+    # If the return code is 200, we've reached to $url successfully
+    if [ "$result" = "200 OK" ]; then
+    echo "1 (proxy works)"
+    # Otherwise, we've got a problem (either the HTTP Proxy Server does not work
+    # or the request timed out)
+    else
+    echo "0 (proxy does not work or request timed out)"
+    fi
