@@ -1,8 +1,9 @@
-#create a bash script which will scan a folder given as a relative or full path on the command line. The script should #output a list of all folders in the given path which are empty. The script should prompt the user as to whether to delete #or ignore the folders. On answering the prompt all empty folder should be deleted in the event of a request for deletion.
+#create a bash script which will scan a folder given as a relative or full path on the command line. The script should #output a list of all folders in the given path which are empty. The script should prompt the user as to whether to delete #or ignore the folders. On answering the prompt all empty folder should be deleted in the event of a request for deletion. #If there are multiple folders with no files, provide the user a prompt to delete all directories at once.
 
 #Save this script to a file (e.g., empty_directory_cleaner.sh), make it executable (chmod +x empty_directory_cleaner.sh), #and then you can run it by providing the target directory as an argument:
 
 #./empty_directory_cleaner.sh /path/to/your/directory
+#The script will list all empty directories within the provided path and prompt you for deletion confirmation. If you #choose to delete a directory, it will be removed from the filesystem. If you choose to ignore, it will move on to the #next empty directory. The script will then display a message when the operation is completed.
 #The script will list all empty directories within the provided path and prompt you for deletion confirmation. If you #choose to delete a directory, it will be removed from the filesystem. If you choose to ignore, it will move on to the #next empty directory. The script will then display a message when the operation is completed.
 
 #!/bin/bash
